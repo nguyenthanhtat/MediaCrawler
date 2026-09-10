@@ -178,6 +178,13 @@ async def update_douyin_aweme(aweme_item: Dict):
         "music_download_url": _extract_music_download_url(aweme_item),
         "note_download_url": ",".join(_extract_note_image_list(aweme_item)),
         "source_keyword": source_keyword_var.get(),
+        # [reup] thong tin de loc nguon: do phan giai goc + thoi luong + nickname THAT
+        "video_width": (aweme_item.get("video") or {}).get("width"),
+        "video_height": (aweme_item.get("video") or {}).get("height"),
+        "video_duration_ms": (aweme_item.get("video") or {}).get("duration") or aweme_item.get("duration"),
+        "nickname_raw": user_info.get("nickname"),
+        "play_count": str(interact_info.get("play_count") or ""),
+        "best_gear": ",".join(sorted({(b.get("gear_name") or "") for b in ((aweme_item.get("video") or {}).get("bit_rate") or [])} - {""})),
     }
     utils.logger.info(f"[store.douyin.update_douyin_aweme] douyin aweme id:{aweme_id}, title:{save_content_item.get('title')}")
     await DouyinStoreFactory.create_store().store_content(content_item=save_content_item)

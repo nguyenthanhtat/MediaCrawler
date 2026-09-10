@@ -47,7 +47,7 @@ class DouYinLogin(AbstractLogin):
         self.browser_context = browser_context
         self.context_page = context_page
         self.login_phone = login_phone
-        self.scan_qrcode_time = 60
+        self.scan_qrcode_time = 240   # [reup] noi rong thoi gian cho quet QR (60s hoi gap)
         self.cookie_str = cookie_str
 
     async def begin(self):

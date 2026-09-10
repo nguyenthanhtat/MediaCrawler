@@ -52,7 +52,7 @@ BILI_SEARCH_MODE = "normal"
 # Video definition (qn) configuration, common values:
 # 16=360p, 32=480p, 64=720p, 80=1080p, 112=1080p high bit rate, 116=1080p60, 120=4K
 # Note: Higher definition requires account/video support
-BILI_QN = 80
+BILI_QN = 120   # tran chat luong: xin toi da (4K neu co) -> tu chon ban cao nhat co san (khong co thi tut ve 1080p)
 
 # Whether to crawl user information
 CREATOR_MODE = True

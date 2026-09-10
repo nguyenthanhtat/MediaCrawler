@@ -184,3 +184,5 @@ debug_tools
 
 database/*.db
 .omx/
+# [reup] cookie dang nhap (khong len repo)
+config/cookies.local

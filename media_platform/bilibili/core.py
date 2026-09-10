@@ -24,6 +24,9 @@
 
 import asyncio
 import os
+import shutil
+import subprocess
+import tempfile
 # import random  # Removed as we now use fixed config.CRAWLER_MAX_SLEEP_SEC intervals
 from asyncio import Task
 from typing import Dict, List, Optional, Tuple, Union
@@ -587,25 +590,68 @@ class BilibiliCrawler(AbstractCrawler):
         if result is None:
             utils.logger.info("[BilibiliCrawler.get_bilibili_video] get video play url failed")
             return
-        durl_list = result.get("durl")
-        max_size = -1
-        video_url = ""
-        for durl in durl_list:
-            size = durl.get("size")
-            if size > max_size:
-                max_size = size
-                video_url = durl.get("url")
-        if video_url == "":
-            utils.logger.info("[BilibiliCrawler.get_bilibili_video] get video url failed")
-            return
 
-        content = await self.bili_client.get_video_media(video_url)
+        content = None
+        dash = result.get("dash")
+        if dash and dash.get("video"):
+            # DASH: tach rieng video+audio -> chon 1080p (H.264) + audio tot nhat -> ghep ffmpeg
+            content = await self._download_dash_video(dash, aid)
+        if content is None:
+            # fallback: dinh dang MP4 cu (durl) — cap 720p nhung van chay neu DASH khong co
+            durl_list = result.get("durl") or []
+            max_size, video_url = -1, ""
+            for durl in durl_list:
+                if durl.get("size", 0) > max_size:
+                    max_size = durl.get("size", 0); video_url = durl.get("url")
+            if video_url:
+                bk = [d.get("backup_url") for d in durl_list if d.get("url") == video_url]
+                content = await self.bili_client.get_video_media(video_url, [u for b in bk for u in (b or [])])
         await asyncio.sleep(config.CRAWLER_MAX_SLEEP_SEC)
         utils.logger.info(f"[BilibiliCrawler.get_bilibili_video] Sleeping for {config.CRAWLER_MAX_SLEEP_SEC} seconds after fetching video {aid}")
         if content is None:
+            utils.logger.info("[BilibiliCrawler.get_bilibili_video] get video content failed")
             return
-        extension_file_name = f"video.mp4"
-        await bilibili_store.store_video(aid, content, extension_file_name)
+        await bilibili_store.store_video(aid, content, "video.mp4")
+
+    async def _download_dash_video(self, dash: Dict, aid) -> Optional[bytes]:
+        """Tai stream video+audio DASH roi ghep bang ffmpeg -> tra ve bytes MP4.
+        Chon video H.264 do phan giai cao nhat (<= BILI_QN) + audio bitrate cao nhat."""
+        qn_cap = getattr(config, "BILI_QN", 80)
+        videos = dash.get("video") or []
+        h264 = [v for v in videos if v.get("codecid") == 7] or videos   # uu tien H.264 (khoi lo AV1/HEVC)
+        cand = [v for v in h264 if v.get("id", 0) <= qn_cap] or h264
+        best_v = max(cand, key=lambda v: (v.get("id", 0), v.get("bandwidth", 0)))
+        audios = dash.get("audio") or []
+        best_a = max(audios, key=lambda a: a.get("bandwidth", 0)) if audios else None
+
+        def _urls(s):
+            # mirror akamai (upos-hz-mirrorakam) hay ngat/cut file tu VN -> xep sau cac mirror khac
+            allu = [u for u in [s.get("baseUrl") or s.get("base_url") or ""] + list(s.get("backupUrl") or s.get("backup_url") or []) if u]
+            allu = sorted(dict.fromkeys(allu), key=lambda u: "mirrorakam" in u)
+            return (allu[0] if allu else ""), allu[1:]
+
+        v_bytes = await self.bili_client.get_video_media(*_urls(best_v)) if best_v else None
+        a_bytes = await self.bili_client.get_video_media(*_urls(best_a)) if best_a else None
+        if not v_bytes:
+            return None
+        w, h = best_v.get("width"), best_v.get("height")
+        utils.logger.info(f"[BilibiliCrawler._download_dash_video] DASH video {w}x{h} qn={best_v.get('id')} + audio -> ghep")
+        tmp = tempfile.mkdtemp(prefix="bili_dash_")
+        try:
+            vp = os.path.join(tmp, "v.m4s"); open(vp, "wb").write(v_bytes)
+            if not a_bytes:                                  # khong co audio -> tra video luon
+                return v_bytes
+            ap = os.path.join(tmp, "a.m4s"); open(ap, "wb").write(a_bytes)
+            outp = os.path.join(tmp, "out.mp4")
+            ff = shutil.which("ffmpeg") or "ffmpeg"
+            r = subprocess.run([ff, "-y", "-i", vp, "-i", ap, "-c", "copy", "-movflags", "+faststart", outp],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace")
+            if r.returncode != 0 or not os.path.exists(outp):
+                utils.logger.error(f"[BilibiliCrawler._download_dash_video] ffmpeg ghep loi: {(r.stderr or '')[-200:]}")
+                return v_bytes                               # ghep loi -> it ra co video (khong tieng)
+            return open(outp, "rb").read()
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     async def get_all_creator_details(self, creator_url_list: List[str]):
         """

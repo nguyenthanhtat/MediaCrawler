@@ -1,3 +1,4 @@
-*.js linguist-language=python
-*.css linguist-language=python
-*.html linguist-language=python
+# [reup] chuan hoa LF (file tren o NTFS luu CRLF -> tranh diff gia)
+* text=auto eol=lf
+*.bat text eol=crlf
+*.ps1 text eol=crlf

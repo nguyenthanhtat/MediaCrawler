@@ -229,27 +229,54 @@ class BilibiliClient(AbstractApiClient, ProxyRefreshMixin):
             "cid": cid,
             "qn": qn_value,
             "fourk": 1,
-            "fnval": 1,
+            "fnval": 16 | 128,    # DASH(16) | 4K(128): cho phep 1080p cao/1080p60/4K (fnval=1 MP4 cu bi cap 720p)
             "platform": "pc",
         }
 
         return await self.get(uri, params, enable_params_sign=True)
 
-    async def get_video_media(self, url: str) -> Union[bytes, None]:
-        # Follow CDN 302 redirects and treat any 2xx as success (some endpoints return 206)
-        async with make_async_client(proxy=self.proxy, follow_redirects=True) as client:
-            try:
-                response = await client.request("GET", url, timeout=self.timeout, headers=self.headers)
-                response.raise_for_status()
-                if 200 <= response.status_code < 300:
-                    return response.content
-                utils.logger.error(
-                    f"[BilibiliClient.get_video_media] Unexpected status {response.status_code} for {url}"
-                )
-                return None
-            except httpx.HTTPError as exc:  # some wrong when call httpx.request method, such as connection error, client error, server error or response status code is not 2xx
-                utils.logger.error(f"[BilibiliClient.get_video_media] {exc.__class__.__name__} for {exc.request.url} - {exc}")  # Keep original exception type name for developer debugging
-                return None
+    async def get_video_media(self, url: str, backup_urls: Optional[List[str]] = None) -> Union[bytes, None]:
+        """Tai file media theo tung khuc (Range) co retry; hong URL chinh thi thu URL du phong.
+        CDN mirror (akamai) hay ngat ket noi giua chung voi file lon -> tai ca file 1 lan de loi."""
+        urls = [url] + [u for u in (backup_urls or []) if u and u != url]
+        chunk = 4 * 1024 * 1024
+        headers = dict(self.headers)
+        headers.setdefault("Referer", "https://www.bilibili.com/")
+        timeout = httpx.Timeout(90.0, connect=20.0)
+        async with make_async_client(proxy=self.proxy, follow_redirects=True, timeout=timeout) as client:
+            for u in urls:
+                buf = bytearray(); pos = 0; total = None; fails = 0
+                try:
+                    while True:
+                        h = dict(headers); h["Range"] = f"bytes={pos}-{pos + chunk - 1}"
+                        try:
+                            r = await client.request("GET", u, headers=h)
+                        except httpx.HTTPError as exc:
+                            fails += 1
+                            if fails > 8:
+                                raise
+                            utils.logger.warning(f"[BilibiliClient.get_video_media] {exc.__class__.__name__} @ {pos} -> retry {fails}")
+                            await asyncio.sleep(1.5 * fails)
+                            continue
+                        if r.status_code == 416:            # het file
+                            break
+                        if r.status_code not in (200, 206):
+                            raise httpx.HTTPStatusError(f"status {r.status_code}", request=r.request, response=r)
+                        data = r.content; buf += data; pos += len(data); fails = 0   # khuc OK -> reset dem loi
+                        if r.status_code == 200:            # server bo qua Range -> da tra ca file
+                            break
+                        cr = r.headers.get("Content-Range", "")
+                        if "/" in cr:
+                            try: total = int(cr.rsplit("/", 1)[1])
+                            except ValueError: total = None
+                        if not data or (total is not None and pos >= total) or len(data) < chunk:
+                            break
+                    if buf:
+                        return bytes(buf)
+                except httpx.HTTPError as exc:
+                    utils.logger.error(f"[BilibiliClient.get_video_media] {exc.__class__.__name__} for {u[:120]} - {exc}; thu URL khac")
+                    continue
+        return None
 
     async def get_video_comments(
         self,
